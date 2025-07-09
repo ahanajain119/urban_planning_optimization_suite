@@ -6,9 +6,11 @@ import folium
 from streamlit_folium import folium_static
 import matplotlib.pyplot as plt
 import seaborn as sns
+import osmnx as ox
 
-from src.data_processing import get_city_stats
 
+from src.data_processing import get_city_stats, MysoreDataLoader  
+from src.visualization import create_base_map
 # Set page configuration
 st.set_page_config(page_title="Urban Planning Optimizer", 
                    layout="wide",
@@ -80,10 +82,24 @@ if page == "City Overview":
         st.markdown(f'<div class="metric-box">Traffic Score<br><h2>{traffic_score:,}</h2></div>', unsafe_allow_html=True)
     
     st.markdown("---")
-
-    #Map Placeholder
+    
+    #Map 
     st.subheader("City Map")
-    st.info("City map will be loaded here once we process OpenStreetMap data")
+    try:
+        loader = MysoreDataLoader()
+        loader.load_mysore_data(save_to_file=False)
+        m = create_base_map(
+            loader.city_center,
+            loader.key_locations,
+            loader.amenities,
+            loader.buildings,
+            loader.land_use,
+            loader.road_network,
+            loader.bbox
+        )
+        folium_static(m)
+    except Exception as e:
+        st.error(f"Could not load map: {e}")
         
     # Placeholder for basic charts
     col1, col2 = st.columns(2)
@@ -146,8 +162,40 @@ if page == "City Overview":
                     st.info("Area data not available.")          
 
 elif page == "Traffic Analysis":
-    st.markdown('<div class="sub-header ">Traffic flow & Congestion Analysis</div>', unsafe_allow_html=True)
-    st.info("Traffic analysis will be implemented in the next phase")
+    st.markdown('<div class="sub-header ">Traffic Flow & Congestion Analysis</div>', unsafe_allow_html=True)
+
+    try:
+        loader = MysoreDataLoader()
+        loader.load_mysore_data(save_to_file=False)
+        m = folium.Map(location=loader.city_center, zoom_start=13, tiles='OpenStreetMap')
+
+        # Add road network as gray lines
+        if loader.road_network is not None:
+            nodes, edges = ox.graph_to_gdfs(loader.road_network)
+            folium.GeoJson(
+                edges,
+                name="Roads",
+                style_function=lambda x: {'color': 'gray', 'weight': 2}
+            ).add_to(m)
+        folium.LayerControl().add_to(m)
+        folium_static(m)
+    except Exception as e:
+        st.error(f"Could not load road network map: {e}")
+
+    # --- Basic Traffic Stats ---
+    st.subheader("Network Statistics")
+    if loader.road_network is not None:
+        num_edges = len(loader.road_network.edges())
+        num_nodes = len(loader.road_network.nodes())
+        degrees = dict(loader.road_network.degree())
+        avg_degree = sum(degrees.values()) / len(degrees) if degrees else 0
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Road Segments", f"{num_edges:,}")
+        col2.metric("Total Intersections", f"{num_nodes:,}")
+        col3.metric("Avg. Node Degree", f"{avg_degree:.2f}")
+    else:
+        st.info("No road network data available.")
 
 elif page == "Enviornmental Impact":
     st.markdown('<div class="sub-header">Environmental IQuality and Clean Space</div>', unsafe_allow_html=True)
