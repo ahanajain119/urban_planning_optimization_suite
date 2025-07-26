@@ -374,6 +374,115 @@ def calculate_traffic_score(road_network):
     # Normalize to a 1-10 scale
     return round(min(10, max(1, avg_degree * 2)), 2)
 
+def create_square_grid(bbox, n_rows=5, n_cols=5, crs="EPSG:4326"):
+    """
+    Create a square grid (GeoDataFrame) over the given bounding box.
+    Args:
+        bbox: dict with 'north', 'south', 'east', 'west'
+        n_rows: number of rows in the grid
+        n_cols: number of columns in the grid
+        crs: coordinate reference system for the output grid
+    Returns:
+        GeoDataFrame with one polygon per grid cell, and zone_id
+    """
+    from shapely.geometry import box
+    import geopandas as gpd
+    import numpy as np
+
+    minx, miny, maxx, maxy = bbox['west'], bbox['south'], bbox['east'], bbox['north']
+    width = (maxx - minx) / n_cols
+    height = (maxy - miny) / n_rows
+    polygons = []
+    zone_ids = []
+    for i in range(n_rows):
+        for j in range(n_cols):
+            x1 = minx + j * width
+            x2 = x1 + width
+            y1 = miny + i * height
+            y2 = y1 + height
+            poly = box(x1, y1, x2, y2)
+            polygons.append(poly)
+            zone_ids.append(f"zone_{i}_{j}")
+    grid_gdf = gpd.GeoDataFrame({'zone_id': zone_ids, 'geometry': polygons}, crs=crs)
+    return grid_gdf
+
+def calculate_green_space_per_zone(land_use_gdf, grid_gdf):
+    """
+    For each grid cell, calculate the % green space (by area).
+    Returns a GeoDataFrame with 'zone_id', 'geometry', 'green_area_km2', 'zone_area_km2', 'green_pct'.
+    """
+    import geopandas as gpd
+    GREEN_TAGS = [
+        'forest', 'grass', 'recreation_ground', 'park', 'playground',
+        'sports_centre', 'stadium', 'wood', 'grassland'
+    ]
+    # Project to UTM for area calculation
+    grid_proj = grid_gdf.to_crs(epsg=32643)
+    land_use_proj = land_use_gdf.to_crs(epsg=32643)
+    # Filter green polygons
+    mask = (
+        land_use_proj.get('landuse', pd.Series()).isin(GREEN_TAGS) |
+        land_use_proj.get('leisure', pd.Series()).isin(GREEN_TAGS) |
+        land_use_proj.get('natural', pd.Series()).isin(GREEN_TAGS)
+    )
+    green_gdf = land_use_proj[mask]
+    # Calculate per-zone green area
+    results = []
+    for idx, zone in grid_proj.iterrows():
+        zone_geom = zone.geometry
+        zone_area = zone_geom.area / 1e6  # m² to km²
+        # Intersect green polygons with zone
+        green_in_zone = green_gdf[green_gdf.intersects(zone_geom)].copy()
+        if not green_in_zone.empty:
+            green_in_zone['intersection'] = green_in_zone.geometry.intersection(zone_geom)
+            green_area = green_in_zone['intersection'].area.sum() / 1e6
+        else:
+            green_area = 0
+        green_pct = round(100 * green_area / zone_area, 2) if zone_area > 0 else 0
+        results.append({
+            'zone_id': zone.zone_id,
+            'geometry': zone.geometry,
+            'green_area_km2': green_area,
+            'zone_area_km2': zone_area,
+            'green_pct': green_pct
+        })
+    return gpd.GeoDataFrame(results, crs=grid_gdf.crs)
+
+def calculate_pollution_score_per_zone(road_network, grid_gdf, green_stats_gdf):
+    """
+    For each grid cell, calculate a simple pollution score:
+    pollution_score = (road_length_km in zone) - (green_area_km2 in zone)
+    Returns a GeoDataFrame with 'zone_id', 'geometry', 'pollution_score'.
+    """
+    import geopandas as gpd
+    import osmnx as ox
+    # Project grid to UTM
+    grid_proj = grid_gdf.to_crs(epsg=32643)
+    # Get road edges as GeoDataFrame
+    nodes, edges = ox.graph_to_gdfs(road_network)
+    edges_proj = edges.to_crs(epsg=32643)
+    pollution_results = []
+    for idx, zone in grid_proj.iterrows():
+        zone_geom = zone.geometry
+        # Road length in zone
+        roads_in_zone = edges_proj[edges_proj.intersects(zone_geom)].copy()
+        if not roads_in_zone.empty:
+            roads_in_zone['intersection'] = roads_in_zone.geometry.intersection(zone_geom)
+            road_length = roads_in_zone['intersection'].length.sum() / 1000  # meters to km
+        else:
+            road_length = 0
+        # Green area in zone (from green_stats_gdf)
+        green_area = green_stats_gdf.loc[green_stats_gdf.zone_id == zone.zone_id, 'green_area_km2'].values
+        green_area = green_area[0] if len(green_area) > 0 else 0
+        # Simple pollution score: more roads + less green = higher pollution
+        pollution_score = round(road_length - green_area, 3)
+        pollution_results.append({
+            'zone_id': zone.zone_id,
+            'geometry': zone.geometry,
+            'pollution_score': pollution_score
+        })
+    return gpd.GeoDataFrame(pollution_results, crs=grid_gdf.crs)
+
 @st.cache_data(show_spinner="Loading Mysore city data...")
 def get_city_stats(city: str):
     city_key = city.lower()

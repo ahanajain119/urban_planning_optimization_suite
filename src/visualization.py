@@ -94,3 +94,33 @@ def create_base_map(city_center, key_locations, amenities, buildings, land_use, 
     Fullscreen().add_to(m)
     folium.LayerControl(collapsed=False).add_to(m)
     return m
+
+def add_green_legend(map_object, color_map, position="bottomright"):
+    """
+    Adds a legend to a Folium map for green space types.
+    Args:
+        map_object: folium.Map
+        color_map: dict of {type: color}
+        position: legend position (default: bottomright)
+    """
+    legend_html = f'''
+    <div style="position: fixed; \
+                {position}: 20px; z-index:9999; background-color: white; \
+                border:2px solid grey; border-radius:6px; padding: 10px; font-size:14px;">
+      <b>Green Space Types</b><br>
+      {''.join([f'<div style="display: flex; align-items: center; margin-bottom: 4px;">'
+                f'<span style="background:{color};width:18px;height:18px;display:inline-block;margin-right:8px;border:1px solid #888;"></span>'
+                f'{label.title()}</div>' for label, color in color_map.items()])}
+    </div>
+    '''
+    from branca.element import MacroElement
+    from jinja2 import Template
+    class Legend(MacroElement):
+        def __init__(self, html):
+            super().__init__()
+            self._template = Template(f"""
+                {{% macro html(this, kwargs) %}}
+                {html}
+                {{% endmacro %}}
+            """)
+    map_object.get_root().add_child(Legend(legend_html))
